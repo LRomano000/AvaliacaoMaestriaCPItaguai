@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -89,9 +89,11 @@
     display: flex;
     gap: 6px;
     overflow-x: auto;
-    padding: 0 1rem 0.7rem;
+    padding: 0 1rem 0.85rem;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
+    border-bottom: 1px solid var(--border-md);
+    margin-bottom: 0.7rem;
   }
   .store-tabs::-webkit-scrollbar { display: none; }
 
@@ -208,8 +210,18 @@
   }
   .text-area { min-height: 76px; resize: vertical; line-height: 1.45; }
 
-  .field-row { display: flex; gap: 10px; }
-  .field-row .field-group { flex: 1; min-width: 0; }
+  /* iOS Safari renders the native date control with intrinsic width that can
+     overflow narrow flex children; tighten padding and force it to respect
+     the parent's box so two date fields never overlap on narrow screens. */
+  input[type="date"].text-field {
+    padding: 12px 8px;
+    min-width: 0;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  .field-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .field-row .field-group { flex: 1 1 130px; min-width: 130px; }
 
   /* ---- Vendedoras list (Cadastro) ---- */
   .vend-list { display: flex; flex-direction: column; gap: 8px; }
@@ -337,9 +349,6 @@
     display: flex;
     align-items: flex-start;
     gap: 11px;
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-    user-select: none;
   }
 
   .check-box {
@@ -349,15 +358,25 @@
     background: var(--surface);
     flex-shrink: 0;
     position: relative;
-    margin-top: 1px;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  /* Invisible larger hit area around the visual checkbox, so touch/click works
+     even when tapping slightly outside the 26x26 box, without changing how the box looks. */
+  .check-box::before {
+    content: '';
+    position: absolute;
+    top: -8px; left: -8px; right: -8px; bottom: -8px;
   }
   .check-item.on .check-box { background: var(--green); border-color: var(--green); }
   .check-box::after {
     content: '';
     display: none;
     position: absolute;
-    left: 7px; top: 3px;
+    left: 50%; top: 50%;
     width: 7px; height: 12px;
+    margin: -8px 0 0 -5px;
     border: 2px solid #fff;
     border-top: none;
     border-left: none;
@@ -613,9 +632,11 @@
   function defaultData() {
     return {
       lojas: [
+        makeLoja('VD'),
         makeLoja('Botica'),
         makeLoja('Lubotica')
       ],
+      focoCiclo: '',
       activeStoreId: null,
       activeSubTab: {} // storeId -> subtab key ('cadastro' or vendedoraId)
     };
@@ -626,7 +647,7 @@
     return {
       id: id,
       nome: nome,
-      ciclo: { numero: '', dataInicio: '', dataFim: '', foco: '' },
+      ciclo: { numero: '', dataInicio: '', dataFim: '' },
       vendedoras: []
     };
   }
@@ -658,8 +679,17 @@
       var parsed = JSON.parse(raw);
       if (!parsed || !parsed.lojas || !parsed.lojas.length) { return defaultData(); }
       /* backfill missing fields for forward-compat */
+      if (parsed.focoCiclo === undefined) {
+        /* migração: versões antigas guardavam o foco por loja; pega o primeiro não vazio encontrado */
+        var migratedFoco = '';
+        parsed.lojas.forEach(function (loja) {
+          if (!migratedFoco && loja.ciclo && loja.ciclo.foco) { migratedFoco = loja.ciclo.foco; }
+        });
+        parsed.focoCiclo = migratedFoco;
+      }
       parsed.lojas.forEach(function (loja) {
-        if (!loja.ciclo) { loja.ciclo = { numero: '', dataInicio: '', dataFim: '', foco: '' }; }
+        if (!loja.ciclo) { loja.ciclo = { numero: '', dataInicio: '', dataFim: '' }; }
+        if (loja.ciclo.foco !== undefined) { delete loja.ciclo.foco; }
         if (!loja.vendedoras) { loja.vendedoras = []; }
         loja.vendedoras.forEach(function (v) {
           if (!v.checklist) { v.checklist = makeVendedora('').checklist; }
@@ -805,7 +835,7 @@
     if (!loja) { wrap.innerHTML = ''; return; }
 
     var active = getActiveSubTab(loja.id);
-    var html = '<div class="sub-tab cadastro-tab' + (active === 'cadastro' ? ' active' : '') + '" data-sub="cadastro">Cadastro</div>';
+    var html = '<div class="sub-tab cadastro-tab' + (active === 'cadastro' ? ' active' : '') + '" data-sub="cadastro">Dados da Loja</div>';
 
     loja.vendedoras.forEach(function (vend) {
       var isActive = active === vend.id;
@@ -822,11 +852,13 @@
     var tabs = wrap.querySelectorAll('.sub-tab');
     forEachNode(tabs, function (tab) {
       tab.addEventListener('click', function () {
-        setActiveSubTab(loja.id, tab.getAttribute('data-sub'));
+        var subKey = tab.getAttribute('data-sub');
+        setActiveSubTab(loja.id, subKey);
         scheduleSave();
+        renderSubTabs();
         renderContent();
-        var subTabsScroller = g('sub-tabs');
-        if (subTabsScroller) { tab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); }
+        var newActiveTab = wrap.querySelector('.sub-tab.active');
+        if (newActiveTab) { newActiveTab.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' }); }
       });
     });
   }
@@ -873,17 +905,24 @@
   /* =========================================================
      RENDER — Cadastro (dados da loja, ciclo, vendedoras)
      ========================================================= */
+  function buildCicloNumOptions(selected) {
+    var html = '<option value="">Selecione...</option>';
+    for (var i = 1; i <= 17; i++) {
+      var sel = (String(i) === String(selected)) ? ' selected' : '';
+      html += '<option value="' + i + '"' + sel + '>' + i + '</option>';
+    }
+    return html;
+  }
+
   function renderCadastro(loja, area) {
     var html = '';
 
     html += '<div class="card">' +
       '<p class="sec-label">Dados do ciclo</p>' +
       '<div class="info-grid">' +
-        '<div class="field-row">' +
-          '<div class="field-group">' +
-            '<label for="cad-ciclo-num">Número do ciclo</label>' +
-            '<input type="text" class="text-field" id="cad-ciclo-num" placeholder="Ex: 01/2026" value="' + escapeHtml(loja.ciclo.numero) + '" autocomplete="off" />' +
-          '</div>' +
+        '<div class="field-group">' +
+          '<label for="cad-ciclo-num">Número do ciclo</label>' +
+          '<select class="text-field" id="cad-ciclo-num">' + buildCicloNumOptions(loja.ciclo.numero) + '</select>' +
         '</div>' +
         '<div class="field-row">' +
           '<div class="field-group">' +
@@ -897,7 +936,8 @@
         '</div>' +
         '<div class="field-group">' +
           '<label for="cad-ciclo-foco">Foco do ciclo</label>' +
-          '<textarea class="text-area" id="cad-ciclo-foco" placeholder="Ex: Aumentar IAF e reforçar lançamentos do ciclo" style="min-height:56px;">' + escapeHtml(loja.ciclo.foco) + '</textarea>' +
+          '<textarea class="text-area" id="cad-ciclo-foco" placeholder="Ex: Aumentar IAF e reforçar lançamentos do ciclo" style="min-height:56px;">' + escapeHtml(DATA.focoCiclo) + '</textarea>' +
+          '<p style="font-size:11px;color:var(--text-muted);margin-top:2px;">O foco do ciclo é o mesmo para todas as lojas.</p>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -929,6 +969,12 @@
       '<button class="btn-add-vend" id="btn-add-vend">+ Adicionar vendedora</button>' +
     '</div>';
 
+    html += '<div class="card">' +
+      '<p class="sec-label">Exportar</p>' +
+      '<p style="font-size:12.5px;color:var(--text-muted);line-height:1.5;margin-bottom:12px;">Gera um Excel consolidado com o checklist de todas as vendedoras desta loja, cada uma em uma aba própria.</p>' +
+      '<button class="btn btn-primary" id="btn-export-loja" style="width:100%;">' + iconSheet() + ' Exportar Excel da loja</button>' +
+    '</div>';
+
     html += '<div class="card" style="border-color:var(--amber-light);">' +
       '<p class="sec-label">Início de novo ciclo</p>' +
       '<p style="font-size:12.5px;color:var(--text-muted);line-height:1.5;margin-bottom:12px;">Apaga os dados do ciclo (número, datas, foco) e todas as vendedoras com seus checklists desta loja. A loja "' + escapeHtml(loja.nome) + '" continua existindo, pronta para o novo ciclo.</p>' +
@@ -947,10 +993,10 @@
   }
 
   function wireCadastroEvents(loja) {
-    bindField('cad-ciclo-num', function (v) { loja.ciclo.numero = v; });
+    bindFieldEvent('cad-ciclo-num', 'change', function (v) { loja.ciclo.numero = v; });
     bindField('cad-ciclo-ini', function (v) { loja.ciclo.dataInicio = v; });
     bindField('cad-ciclo-fim', function (v) { loja.ciclo.dataFim = v; });
-    bindField('cad-ciclo-foco', function (v) { loja.ciclo.foco = v; });
+    bindField('cad-ciclo-foco', function (v) { DATA.focoCiclo = v; });
 
     bindField('cad-loja-nome', function (v) {
       loja.nome = v;
@@ -1002,6 +1048,11 @@
       if (input) { input.focus(); }
     });
 
+    var exportLojaBtn = g('btn-export-loja');
+    if (exportLojaBtn) {
+      exportLojaBtn.addEventListener('click', function () { handleExportLoja(loja); });
+    }
+
     var resetCicloBtn = g('btn-reset-ciclo');
     if (resetCicloBtn) {
       resetCicloBtn.addEventListener('click', function () {
@@ -1042,9 +1093,13 @@
   }
 
   function bindField(id, setter) {
+    bindFieldEvent(id, 'input', setter);
+  }
+
+  function bindFieldEvent(id, eventName, setter) {
     var el = g(id);
     if (!el) { return; }
-    el.addEventListener('input', function () {
+    el.addEventListener(eventName, function () {
       setter(el.value);
       scheduleSave();
     });
@@ -1072,7 +1127,7 @@
         '</div>' +
         '<div class="field-group">' +
           '<label>Foco do ciclo</label>' +
-          '<div class="text-field" style="background:var(--surface2);color:var(--text-mid);min-height:auto;white-space:pre-wrap;">' + (escapeHtml(loja.ciclo.foco) || '<span style="color:var(--text-muted)">Defina o foco do ciclo na aba Cadastro</span>') + '</div>' +
+          '<div class="text-field" style="background:var(--surface2);color:var(--text-mid);min-height:auto;white-space:pre-wrap;">' + (escapeHtml(DATA.focoCiclo) || '<span style="color:var(--text-muted)">Defina o foco do ciclo na aba Dados da Loja</span>') + '</div>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -1121,8 +1176,8 @@
         var hasComment = itemState.comentario && itemState.comentario.trim().length > 0;
 
         html += '<div class="check-item' + (isOn ? ' on' : '') + '" data-key="' + key + '">' +
-          '<div class="check-main" data-toggle="' + key + '">' +
-            '<div class="check-box"></div>' +
+          '<div class="check-main">' +
+            '<div class="check-box" data-toggle="' + key + '"></div>' +
             '<span class="check-text">' + escapeHtml(itemText) + '</span>' +
             '<div class="check-comment-toggle' + (hasComment ? ' has-text' : '') + '" data-comment-toggle="' + key + '" title="Observação">' + iconComment() + '</div>' +
           '</div>' +
@@ -1178,35 +1233,24 @@
 
   function wireChecklistEvents(loja, vend) {
 
-    /* Toggle do check (X) — clique no item, exceto no botão de comentário */
+    /* Toggle do check (X) — toque apenas na caixinha (check-box), nunca no texto */
     var mains = document.querySelectorAll('[data-toggle]');
     forEachNode(mains, function (el) {
-      var lastTouch = 0;
-      function toggle() {
+      el.addEventListener('click', function () {
         var key = el.getAttribute('data-toggle');
         var state = vend.checklist[key];
         state.checked = !state.checked;
         scheduleSave();
         renderChecklist(loja, vend, g('content-area'));
         renderSubTabs();
-      }
-      el.addEventListener('touchend', function (e) {
-        e.preventDefault();
-        lastTouch = Date.now();
-        toggle();
-      });
-      el.addEventListener('click', function () {
-        if (Date.now() - lastTouch < 600) { return; }
-        toggle();
       });
     });
 
     /* Toggle do painel de comentário */
     var commentToggles = document.querySelectorAll('[data-comment-toggle]');
     forEachNode(commentToggles, function (btn) {
-      function openComment(e) {
+      btn.addEventListener('click', function (e) {
         e.stopPropagation();
-        if (e.preventDefault) { e.preventDefault(); }
         var key = btn.getAttribute('data-comment-toggle');
         var wrap = document.querySelector('[data-comment-wrap="' + key + '"]');
         if (wrap) {
@@ -1217,15 +1261,6 @@
             if (textarea) { setTimeout(function () { textarea.focus(); }, 50); }
           }
         }
-      }
-      var lastTouch2 = 0;
-      btn.addEventListener('touchend', function (e) {
-        lastTouch2 = Date.now();
-        openComment(e);
-      });
-      btn.addEventListener('click', function (e) {
-        if (Date.now() - lastTouch2 < 600) { e.stopPropagation(); return; }
-        openComment(e);
       });
     });
 
@@ -1281,7 +1316,7 @@
     }).then(function (canvas) {
       if (actionBar) { actionBar.style.display = originalDisplay || ''; }
       var link = document.createElement('a');
-      var nomeArq = sanitizeFilename(loja.nome + '_' + (vend.nome || 'vendedora') + '_checklist') + '_' + getTimestampSuffix();
+      var nomeArq = sanitizeFilename(loja.nome + '_' + (vend.nome || 'vendedora') + '_checklist') + getCicloFileTag(loja) + '_' + getTimestampSuffix();
       link.download = nomeArq + '.png';
       link.href = canvas.toDataURL('image/png');
       document.body.appendChild(link);
@@ -1317,6 +1352,88 @@
     return dd + '_' + mm + '_' + yy + '_' + hh + mi + ss;
   }
 
+  /* Retorna o trecho "_C12" (ou string vazia se não houver ciclo definido), para nomes de arquivo exportados */
+  function getCicloFileTag(loja) {
+    var numero = loja && loja.ciclo ? loja.ciclo.numero : '';
+    if (!numero) { return ''; }
+    return '_C' + sanitizeFilename(String(numero));
+  }
+
+  /* =========================================================
+     EXPORT — estilos reutilizáveis para o Excel (xlsx-js-style)
+     ========================================================= */
+  var XLS_GREEN = '1D9E75';
+  var XLS_GREEN_DARK = '0F6E56';
+  var XLS_GREEN_LIGHT = 'E1F5EE';
+  var XLS_AMBER_LIGHT = 'FAEEDA';
+  var XLS_GREY_LIGHT = 'F2F1ED';
+  var XLS_WHITE = 'FFFFFF';
+  var XLS_TEXT = '191917';
+  var XLS_BORDER = { style: 'thin', color: { rgb: 'D8D6CF' } };
+  var XLS_BORDER_ALL = { top: XLS_BORDER, bottom: XLS_BORDER, left: XLS_BORDER, right: XLS_BORDER };
+
+  function xlsCell(value, style) {
+    var type = (typeof value === 'number') ? 'n' : 's';
+    return { v: value === undefined || value === null ? '' : value, t: type, s: style || {} };
+  }
+
+  function xlsStyleTitle() {
+    return { font: { bold: true, sz: 14, color: { rgb: XLS_TEXT } } };
+  }
+  function xlsStyleLabel() {
+    return { font: { bold: true, sz: 10, color: { rgb: '55534E' } }, alignment: { vertical: 'center' } };
+  }
+  function xlsStyleValue() {
+    return { font: { sz: 11, color: { rgb: XLS_TEXT } }, alignment: { vertical: 'center', wrapText: true } };
+  }
+  function xlsStyleHeaderRow() {
+    return {
+      font: { bold: true, sz: 11, color: { rgb: XLS_WHITE } },
+      fill: { fgColor: { rgb: XLS_GREEN_DARK } },
+      alignment: { vertical: 'center', horizontal: 'center', wrapText: true },
+      border: XLS_BORDER_ALL
+    };
+  }
+  function xlsStyleEtapaCell() {
+    return {
+      font: { bold: true, sz: 10.5, color: { rgb: XLS_GREEN_DARK } },
+      fill: { fgColor: { rgb: XLS_GREEN_LIGHT } },
+      alignment: { vertical: 'center', horizontal: 'left', wrapText: true },
+      border: XLS_BORDER_ALL
+    };
+  }
+  function xlsStyleItemCell() {
+    return { font: { sz: 10.5, color: { rgb: XLS_TEXT } }, alignment: { vertical: 'center', wrapText: true }, border: XLS_BORDER_ALL };
+  }
+  function xlsStyleCheckCell(checked) {
+    return {
+      font: { bold: true, sz: 12, color: { rgb: checked ? XLS_GREEN_DARK : 'C2BFB6' } },
+      alignment: { vertical: 'center', horizontal: 'center' },
+      fill: { fgColor: { rgb: checked ? XLS_GREEN_LIGHT : XLS_WHITE } },
+      border: XLS_BORDER_ALL
+    };
+  }
+  function xlsStyleObsCell() {
+    return { font: { sz: 10, italic: true, color: { rgb: '55534E' } }, alignment: { vertical: 'center', wrapText: true }, border: XLS_BORDER_ALL };
+  }
+  function xlsStyleSummaryLabel() {
+    return { font: { bold: true, sz: 10.5, color: { rgb: XLS_TEXT } }, fill: { fgColor: { rgb: XLS_GREY_LIGHT } }, alignment: { vertical: 'center' }, border: XLS_BORDER_ALL };
+  }
+  function xlsStyleSummaryValue(highlight) {
+    return {
+      font: { bold: !!highlight, sz: highlight ? 12 : 10.5, color: { rgb: highlight ? XLS_GREEN_DARK : XLS_TEXT } },
+      fill: { fgColor: { rgb: highlight ? XLS_AMBER_LIGHT : XLS_WHITE } },
+      alignment: { vertical: 'center' },
+      border: XLS_BORDER_ALL
+    };
+  }
+  function xlsStyleSectionLabel() {
+    return { font: { bold: true, sz: 10.5, color: { rgb: XLS_WHITE } }, fill: { fgColor: { rgb: XLS_GREEN } }, alignment: { vertical: 'center' }, border: XLS_BORDER_ALL };
+  }
+  function xlsStyleSectionText() {
+    return { font: { sz: 10.5, color: { rgb: XLS_TEXT } }, alignment: { vertical: 'top', wrapText: true }, border: XLS_BORDER_ALL };
+  }
+
 /* SCRIPT_PART_9 */
 
   /* =========================================================
@@ -1335,64 +1452,124 @@
     var wb = XLSX.utils.book_new();
 
     /* --- Aba Resumo --- */
-    var resumoRows = [];
-    resumoRows.push(['Loja', loja.nome]);
-    resumoRows.push(['Ciclo', loja.ciclo.numero || '']);
-    resumoRows.push(['Início', loja.ciclo.dataInicio || '']);
-    resumoRows.push(['Fim', loja.ciclo.dataFim || '']);
-    resumoRows.push(['Foco do ciclo', loja.ciclo.foco || '']);
-    resumoRows.push([]);
-    resumoRows.push(['Vendedora', 'Itens marcados', 'Total de itens', 'Aderência']);
-    loja.vendedoras.forEach(function (vend) {
-      var adh = calcAderenciaVendedora(vend);
-      resumoRows.push([vend.nome || 'Sem nome', adh.marcados, adh.total, Math.round(adh.pct) + '%']);
+    var wsResumo = {};
+    var resumoRefRows = 0;
+
+    function setResumo(r, c, value, style) {
+      var addr = XLSX.utils.encode_cell({ r: r, c: c });
+      wsResumo[addr] = xlsCell(value, style);
+      if (r + 1 > resumoRefRows) { resumoRefRows = r + 1; }
+    }
+
+    setResumo(0, 0, loja.nome + ' — Resumo do ciclo', xlsStyleTitle());
+    setResumo(1, 0, 'Ciclo', xlsStyleSummaryLabel());
+    setResumo(1, 1, loja.ciclo.numero || '-', xlsStyleSummaryValue());
+    setResumo(2, 0, 'Início', xlsStyleSummaryLabel());
+    setResumo(2, 1, loja.ciclo.dataInicio || '-', xlsStyleSummaryValue());
+    setResumo(3, 0, 'Fim', xlsStyleSummaryLabel());
+    setResumo(3, 1, loja.ciclo.dataFim || '-', xlsStyleSummaryValue());
+    setResumo(4, 0, 'Foco do ciclo', xlsStyleSummaryLabel());
+    setResumo(4, 1, DATA.focoCiclo || '-', xlsStyleSummaryValue());
+
+    var resumoHeaderRow = 6;
+    ['Vendedora', 'Itens marcados', 'Total de itens', 'Aderência'].forEach(function (h, ci) {
+      setResumo(resumoHeaderRow, ci, h, xlsStyleHeaderRow());
     });
-    var wsResumo = XLSX.utils.aoa_to_sheet(resumoRows);
-    wsResumo['!cols'] = [{ wch: 26 }, { wch: 16 }, { wch: 14 }, { wch: 12 }];
+    loja.vendedoras.forEach(function (vend, vi) {
+      var adh = calcAderenciaVendedora(vend);
+      var r = resumoHeaderRow + 1 + vi;
+      var highlight = adh.pct >= 80;
+      setResumo(r, 0, vend.nome || 'Sem nome', xlsStyleItemCell());
+      setResumo(r, 1, adh.marcados, xlsStyleSummaryValue());
+      setResumo(r, 2, adh.total, xlsStyleSummaryValue());
+      setResumo(r, 3, Math.round(adh.pct) + '%', xlsStyleSummaryValue(highlight));
+    });
+
+    wsResumo['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: resumoRefRows - 1, c: 3 } });
+    wsResumo['!cols'] = [{ wch: 28 }, { wch: 16 }, { wch: 16 }, { wch: 14 }];
+    wsResumo['!rows'] = [{ hpt: 22 }];
+    wsResumo['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
+    wsResumo['!freeze'] = { xSplit: 0, ySplit: resumoHeaderRow + 1 };
     XLSX.utils.book_append_sheet(wb, wsResumo, 'Resumo');
 
-    /* --- Uma aba por vendedora, seguindo o layout do checklist original --- */
+    /* --- Uma aba por vendedora, seguindo o layout do checklist original, com visual aprimorado --- */
     loja.vendedoras.forEach(function (vend) {
       var adh = calcAderenciaVendedora(vend);
-      var rows = [];
+      var ws = {};
+      var r = 0;
+      var maxRow = 0;
 
-      rows.push(['Atendente:', vend.nome || '']);
-      rows.push(['Foco do ciclo:', loja.ciclo.foco || '']);
-      rows.push([]);
-      rows.push([]);
-      rows.push(['Etapa Maestria', 'Item do Checklist', 'Checklist', 'Observação']);
+      function setCell(row, col, value, style) {
+        var addr = XLSX.utils.encode_cell({ r: row, c: col });
+        ws[addr] = xlsCell(value, style);
+        if (row + 1 > maxRow) { maxRow = row + 1; }
+      }
+
+      setCell(r, 0, vend.nome || 'Sem nome', xlsStyleTitle());
+      r += 1;
+      setCell(r, 0, 'Foco do ciclo', xlsStyleSummaryLabel());
+      setCell(r, 1, DATA.focoCiclo || '-', xlsStyleSummaryValue());
+      r += 1;
+      setCell(r, 0, 'Aderência total', xlsStyleSummaryLabel());
+      setCell(r, 1, Math.round(adh.pct) + '% (' + adh.marcados + ' de ' + adh.total + ' itens)', xlsStyleSummaryValue(true));
+      r += 2;
+
+      var headerRow = r;
+      ['Etapa Maestria', 'Item do Checklist', 'Checklist', 'Observação'].forEach(function (h, ci) {
+        setCell(headerRow, ci, h, xlsStyleHeaderRow());
+      });
+      r += 1;
+
+      var merges = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 3 } }];
 
       CHECKLIST_TEMPLATE.forEach(function (etapa, ei) {
+        var etapaStartRow = r;
         etapa.itens.forEach(function (itemText, ii) {
           var key = ei + '_' + ii;
           var state = vend.checklist[key] || { checked: false, comentario: '' };
-          rows.push([
-            ii === 0 ? etapa.etapa : '',
-            itemText,
-            state.checked ? 'X' : '',
-            state.comentario || ''
-          ]);
+          setCell(r, 0, ii === 0 ? etapa.etapa : '', xlsStyleEtapaCell());
+          setCell(r, 1, itemText, xlsStyleItemCell());
+          setCell(r, 2, state.checked ? 'X' : '', xlsStyleCheckCell(state.checked));
+          setCell(r, 3, state.comentario || '', xlsStyleObsCell());
+          r += 1;
         });
+        if (etapa.itens.length > 1) {
+          merges.push({ s: { r: etapaStartRow, c: 0 }, e: { r: r - 1, c: 0 } });
+        }
       });
 
-      rows.push([]);
-      rows.push(['Checklist Marcados', '', '', adh.marcados]);
-      rows.push(['Aderência:', '', '', Math.round(adh.pct) + '%']);
-      rows.push([]);
-      rows.push(['Pontos Fortes:', vend.pontosFortes || '']);
-      rows.push([]);
-      rows.push(['Oportunidades de Melhoria:', vend.oportunidades || '']);
-      rows.push([]);
-      rows.push(['Plano de Ação:', vend.planoAcao || '']);
+      r += 1;
+      setCell(r, 0, 'Pontos Fortes', xlsStyleSectionLabel());
+      merges.push({ s: { r: r, c: 0 }, e: { r: r, c: 3 } });
+      r += 1;
+      setCell(r, 0, vend.pontosFortes || '-', xlsStyleSectionText());
+      merges.push({ s: { r: r, c: 0 }, e: { r: r, c: 3 } });
+      r += 2;
 
-      var ws = XLSX.utils.aoa_to_sheet(rows);
-      ws['!cols'] = [{ wch: 22 }, { wch: 55 }, { wch: 12 }, { wch: 40 }];
+      setCell(r, 0, 'Oportunidades de Melhoria', xlsStyleSectionLabel());
+      merges.push({ s: { r: r, c: 0 }, e: { r: r, c: 3 } });
+      r += 1;
+      setCell(r, 0, vend.oportunidades || '-', xlsStyleSectionText());
+      merges.push({ s: { r: r, c: 0 }, e: { r: r, c: 3 } });
+      r += 2;
+
+      setCell(r, 0, 'Plano de Ação', xlsStyleSectionLabel());
+      merges.push({ s: { r: r, c: 0 }, e: { r: r, c: 3 } });
+      r += 1;
+      setCell(r, 0, vend.planoAcao || '-', xlsStyleSectionText());
+      merges.push({ s: { r: r, c: 0 }, e: { r: r, c: 3 } });
+
+      ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxRow - 1, c: 3 } });
+      ws['!cols'] = [{ wch: 20 }, { wch: 52 }, { wch: 11 }, { wch: 36 }];
+      ws['!rows'] = [{ hpt: 22 }];
+      ws['!merges'] = merges;
+      ws['!freeze'] = { xSplit: 0, ySplit: headerRow + 1 };
 
       var sheetName = sanitizeSheetName(vend.nome || 'Vendedora');
       XLSX.utils.book_append_sheet(wb, ws, sheetName);
     });
 
-    var nomeArq = sanitizeFilename(loja.nome + '_checklists_maestria') + '_' + getTimestampSuffix();
+    var nomeArq = sanitizeFilename(loja.nome + '_checklists_maestria') + getCicloFileTag(loja) + '_' + getTimestampSuffix();
     XLSX.writeFile(wb, nomeArq + '.xlsx');
     showToast('Excel exportado.');
   }
